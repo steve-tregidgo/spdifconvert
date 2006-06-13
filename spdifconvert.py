@@ -47,7 +47,7 @@
 #   add support for the others... we can tell what sort we've got by the magic
 #   number.
 
-VERSION = '0.1'
+VERSION = '0.2'
 
 class SPDIFConverter:
 
