@@ -266,6 +266,8 @@ class SPDIFConverter:
 
 
     def read_raw(self, file, num_bytes):
+        if self.is_eof(file):
+            return ''
         chunks = []
         eof = False
         to_read = num_bytes
