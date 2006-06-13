@@ -271,14 +271,18 @@ class SPDIFConverter:
         chunks = []
         eof = False
         to_read = num_bytes
-        while to_read > 0:
+        max_pos = self.options.get('truncate_input')
+        tell = file.tell
+        while to_read > 0 and \
+        (max_pos is None or tell() <= max_pos):
             data = file.read(to_read)
             if not data: # EOF
                 eof = True
                 break
             chunks.append(data)
             to_read = to_read - len(data)
-        if eof:
+        if eof or \
+        (max_pos is not None and tell() > max_pos):
             self._eof[file] = True
         return ''.join(chunks)
 
@@ -707,6 +711,7 @@ def print_help(program_name):
         ('-q, --quiet', 'Print fewer messages to stderr.  Repeat this option to\nsilence all messages.'),
         ('-v, --verbose', 'Print more messages to stderr.'),
         ('--frame-size=SIZE', 'Advanced users\' setting: override the frame size in the\noutput file.  We normally pad to a frame size of 6144\n(=1536*4) or 2048 (=512*4); if the resultant WAV file\ndoesn\'t appear to be the correct length (as indicated by any\nnormal audio software which can read WAV files -- but don\'t\nplay the file!) then adjusting this value might help.  Use\n\'--verbose\' to discover the frame size used, and then try\nrunning again with the \'--frame-size\' option set to a\ndifferent value (multiplied up or down by an integer).  If\nyou discover something which works for your file, please let\nme know so I can try setting that size automatically\ndepending on the input file.'),
+        ('--truncate-input=M', 'Don\'t read more than M bytes from the input file.  If the\nMth byte falls within a frame, that partial frame will not\nbe converted.'),
         ('', ''),
         ('-h, -?, --help', 'Display this help text.'),
         ('-V, --version', 'Display the version number.'),
@@ -751,6 +756,7 @@ if __name__ == '__main__':
         'quiet',
         'verbose',
         'frame-size=',
+        'truncate-input=',
         'help',
         'version',
     ]
@@ -770,6 +776,7 @@ if __name__ == '__main__':
         'ac3': False,
         'dts': False,
         'frame_size': None,
+        'truncate_input': None,
         'help': False,
         'version': False,
     }
@@ -797,6 +804,12 @@ if __name__ == '__main__':
             except ValueError:
                 sys.stderr.write("'frame-size' option not an int: " + value)
                 sys.exit(1)
+        elif option in ['--truncate-input']:
+            try:
+                options['truncate_input'] = long(value)
+            except ValueError:
+                sys.stderr.write("'truncate-input' option not an int: " + value)
+                sys.exit(1)
         elif option in ['--help', '-h', '-?']:
             options['help'] = True
         elif option in ['--version', '-V']:
@@ -820,3 +833,6 @@ if __name__ == '__main__':
     except RuntimeError, error:
         spdif.message(0, "Received RuntimeError during conversion:")
         spdif.message(0, error)
+
+    except KeyboardInterrupt:
+        print "Interrupted!  Read this many bytes:", spdif.fin.tell()
