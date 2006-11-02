@@ -47,7 +47,7 @@
 #   add support for the others... we can tell what sort we've got by the magic
 #   number.
 
-VERSION = '0.2'
+VERSION = '0.3'
 
 class SPDIFConverter:
 
@@ -357,7 +357,7 @@ class SPDIFConverter:
         # 'wav_header_info' to None and don't record any of the relevant
         # values.
         if self.wav_header_info is None and self.options['wave']:
-            wav_header_info = self.wav_header_info = {}
+            wav_header_info = {}
         else:
             wav_header_info = None
 
@@ -372,6 +372,8 @@ class SPDIFConverter:
         frame_data = frame_reader(magic, self.spdif_metadata, wav_header_info, is_first_frame)
         if frame_data is not None:
             self.num_frames_read = self.num_frames_read + 1
+            if self.wav_header_info is None and self.options['wave']:
+                self.wav_header_info = wav_header_info
         return frame_data
 
 
@@ -647,7 +649,10 @@ class SPDIFConverter:
         while 1:
             frame = self.read_frame()
             if frame is None:
-                break
+                if not self.options['persevere'] or self.is_eof(self.fin):
+                    break
+                self.message(0, "Encountered bad frame; looking for next good frame.")
+                continue
             if self.options['wave']:
                 self.write_wav_header_if_not_written()
             self.write_spdif_frame(frame)
@@ -704,6 +709,7 @@ def print_help(program_name):
         ('-a, --ac3', 'The input stream is expected to be AC-3.',),
         ('-d, --dts', 'The input stream is expected to be 16-bit big-endian DTS\n(such as is obtained from ripping a DVD).',),
         ('', 'NOTE: in most cases \'--ac3\' and \'--dts\' can be omitted,\nand the stream type will be auto-detected.'),
+        ('--persevere', 'Conversion is usually aborted if a bad frame is encountered,\nas the utility expects that it will have difficulty with the\nrest of the data.  Sometimes a file might be encountered\nwith a bad frame at the start, followed by good frames;\nsupplying this option causes the conversion to keep trying\nto find a good frame.  If the file is full of junk, the\nutility might take a long time to wade through it!'),
         ('', ''),
         ('-w, --wave', 'Prefix output with a WAV header (default).  If not using\nstdout for output, the WAV header will definitely contain an\naccurate data length; if using stdout, the recorded length\nwill be an estimate, which may be wrong if frame sizes vary\nin the source file.  If using both stdin and stdout, the WAV\nheader will definitely be wrong (the length will be zero).'),
         ('-r, --raw', 'Don\'t write a WAV header.  If both \'--raw\' and \'--wave\' are\nspecified, the last one supplied takes precedence.'),
@@ -741,7 +747,6 @@ if __name__ == '__main__':
         'r', # == 'raw'
         'q', # == 'quiet'
         'v', # == 'verbose'
-        'V', # == 'version'
         'h', # == 'help'
         '?', # == 'help'
     ])
@@ -756,6 +761,7 @@ if __name__ == '__main__':
         'verbose',
         'frame-size=',
         'truncate-input=',
+        'persevere',
         'help',
     ]
 
@@ -775,6 +781,7 @@ if __name__ == '__main__':
         'dts': False,
         'frame_size': None,
         'truncate_input': None,
+        'persevere': False,
         'help': False,
     }
 
@@ -807,6 +814,10 @@ if __name__ == '__main__':
             except ValueError:
                 sys.stderr.write("'truncate-input' option not an int: " + value)
                 sys.exit(1)
+
+        elif option in ['--persevere']:
+            options['persevere'] = True
+
         elif option in ['--help', '-h', '-?']:
             options['help'] = True
 
