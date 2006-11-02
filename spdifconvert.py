@@ -713,7 +713,7 @@ def print_help(program_name):
         ('--frame-size=SIZE', 'Advanced users\' setting: override the frame size in the\noutput file.  We normally pad to a frame size of 6144\n(=1536*4) or 2048 (=512*4); if the resultant WAV file\ndoesn\'t appear to be the correct length (as indicated by any\nnormal audio software which can read WAV files -- but don\'t\nplay the file!) then adjusting this value might help.  Use\n\'--verbose\' to discover the frame size used, and then try\nrunning again with the \'--frame-size\' option set to a\ndifferent value (multiplied up or down by an integer).  If\nyou discover something which works for your file, please let\nme know so I can try setting that size automatically\ndepending on the input file.'),
         ('', ''),
         ('-h, -?, --help', 'Display this help text.'),
-        ('-V, --version', 'Display the version number.'),
+
     ]:
         print option_format % (option_string,),
         for i, line in enumerate(text.split('\n')):
@@ -757,7 +757,6 @@ if __name__ == '__main__':
         'frame-size=',
         'truncate-input=',
         'help',
-        'version',
     ]
 
     try:
@@ -777,7 +776,6 @@ if __name__ == '__main__':
         'frame_size': None,
         'truncate_input': None,
         'help': False,
-        'version': False,
     }
 
     for option, value in cli_options:
@@ -811,12 +809,6 @@ if __name__ == '__main__':
                 sys.exit(1)
         elif option in ['--help', '-h', '-?']:
             options['help'] = True
-        elif option in ['--version', '-V']:
-            options['version'] = True
-
-    if options['version']:
-        sys.stderr.write("Version: %s\n" % (VERSION,))
-        sys.exit(0)
 
     if options['help']:
         print_help(program_name)
