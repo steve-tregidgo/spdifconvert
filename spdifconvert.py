@@ -400,7 +400,13 @@ class SPDIFConverter:
             wav_metadata['bytes_per_sample'] = 2
             wav_metadata['nchannels'] = 2
 
-        frame_size = self.ac3_frame_size_table[sync_code & 0x3f][1][fscod]
+        try:
+            frame_size_row = self.ac3_frame_size_table[sync_code & 0x3f]
+        except IndexError:
+            self.message(0, 'Unexpected AC3 frame size code ', hex(sync_code & 0x3f), ' (sync_code: ', hex(sync_code), ', fscod: ', hex(fscod), '); skipping frame.')
+            return None
+
+        frame_size = frame_size_row[1][fscod]
 
         got_num_bytes = len(data) # got magic, CRC, sync
         to_read = (frame_size * 2) - got_num_bytes
