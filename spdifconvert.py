@@ -1,5 +1,5 @@
 #!python
-# Copyright 2005 Steve Tregidgo -- smst@bigfoot.com
+# Copyright 2005-2007 Steve Tregidgo -- smst@bigfoot.com
 #
 # Utility to prepare DTS/AC3 files for SPDIF output.
 #
@@ -47,7 +47,7 @@
 #   add support for the others... we can tell what sort we've got by the magic
 #   number.
 
-VERSION = '0.3'
+VERSION = '0.4'
 
 class SPDIFConverter:
 
@@ -164,9 +164,14 @@ class SPDIFConverter:
     # 'magic_numbers'.
     stream_type = None
 
-    def __init__(self, options, arguments):
+    partial_frame = None
+
+    def __init__(self, options, input_file=None, output_file=None):
+        import sys
+
         self.options = options
         self.initialised = False
+        self.message_writer = MessageWriter(sys.stderr, self.options['quiet'])
 
         if self.options['ac3'] and self.options['dts']:
             self.message(1, "Both 'ac3' and 'dts' options specified!")
@@ -200,46 +205,15 @@ class SPDIFConverter:
         if self.options['frame_size'] is not None:
             self.spdif_metadata['frame_size'] = self.options['frame_size']
 
-        self.fin_name = self.fout_name = None
         self._eof = {}
         self._seekable = {}
 
-        if self.options['stdin']:
-            pass
-        elif len(arguments) > 0:
-            self.fin_name = arguments[0]
-        else:
-            self.message(1, "Not using stdin, and no input file name specified!")
-            self.message(1, "Aborting.")
-            return
-
-        if self.options['stdout']:
-            pass
-        elif len(arguments) > 1:
-            self.fout_name = arguments[1]
-        elif self.fin_name is not None:
-            if self.options['wave']:
-                self.fout_name = self.fin_name + '.wav'
-            else:
-                self.fout_name = self.fin_name + '.spdif'
-        else:
-            self.message(1, "Not using stdin, and no output file name specified!")
-            self.message(1, "Aborting.")
-            return
-
-        if self.fin_name is None:
-            self.fin = sys.stdin
-            self.message(0, "Reading input from stdin")
-        else:
-            self.fin = open(self.fin_name, 'rb')
-            self.message(0, "Reading input from file ", self.fin_name)
-
-        if self.fout_name is None:
-            self.fout = sys.stdout
-            self.message(0, "Writing output to stdout")
-        else:
-            self.fout = open(self.fout_name, 'w+b')
-            self.message(0, "Writing output to file ", self.fout_name)
+        if input_file is None:
+            input_file = sys.stdin
+        self.fin = input_file
+        if output_file is None:
+            output_file = sys.stdout
+        self.fout = output_file
 
         if self.options['wave'] \
         and not self.is_seekable(self.fin) \
@@ -256,12 +230,15 @@ class SPDIFConverter:
 
     def is_seekable(self, file):
         if not self._seekable.has_key(file):
-            try:
-                file.seek(0, 1) # does nothing!
-            except IOError:
-                self._seekable[file] = False
+            if hasattr(file, 'is_seekable'):
+                self._seekable[file] = file.is_seekable()
             else:
-                self._seekable[file] = True
+                try:
+                    file.seek(0, 1) # does nothing!
+                except IOError:
+                    self._seekable[file] = False
+                else:
+                    self._seekable[file] = True
         return self._seekable[file]
 
 
@@ -292,6 +269,7 @@ class SPDIFConverter:
         import struct
 
         current_fin_pos = self.fin.tell()
+        self.partial_frame = None
         is_first_frame = self.num_frames_read == 0
 
         magic = ''
@@ -318,6 +296,7 @@ class SPDIFConverter:
                 else: # didn't break
                     next_byte = self.read_raw(self.fin, 1)
                     if self.is_eof(self.fin):
+                        self.partial_frame = discarded + magic
                         return None
                     if checks[0][0] > 1:
                         discarded = discarded + magic[:1 - checks[0][0]]
@@ -339,6 +318,7 @@ class SPDIFConverter:
                     break
                 next_byte = self.read_raw(self.fin, 1)
                 if self.is_eof(self.fin):
+                    self.partial_frame = discarded + magic
                     return None
                 if len(want_magic) > 1:
                     discarded = discarded + magic[:1 - len(want_magic)]
@@ -383,6 +363,13 @@ class SPDIFConverter:
 
         data = magic + self.read_raw(self.fin, 3)
         if self.is_eof(self.fin):
+            self.partial_frame = data
+            return None
+
+        # Didn't get enough header data!
+        if len(data) < 5:
+            self.message(1, 'Couldn\'t read 5 bytes of header data; skipping frame.')
+            self.partial_frame = data
             return None
 
         sync_code = ord(data[4])
@@ -413,10 +400,7 @@ class SPDIFConverter:
         data = data + self.read_raw(self.fin, to_read)
         if len(data) != to_read + got_num_bytes:
             self.message(-1, 'Read short frame of ', len(data), ', expected ', to_read + got_num_bytes)
-
-        # Didn't get enough header data!
-        if len(data) <= 5:
-            self.message(1, 'Couldn\'t read 5 bytes of header data; skipping frame.')
+            self.partial_frame = data
             return None
 
         spdif_metadata['preamble_data_dependent'] = ord(data[5]) & 0x07
@@ -455,6 +439,7 @@ class SPDIFConverter:
         # Ref [2] for DTS decoding info...
         data = magic + self.read_raw(self.fin, 5)
         if self.is_eof(self.fin) or len(data) < 9:
+            self.partial_frame = data
             return None
 
         # Ref [2], section 5.4.1, FSIZE.
@@ -483,6 +468,8 @@ class SPDIFConverter:
         data = data + self.read_raw(self.fin, to_read)
         if len(data) != to_read + got_num_bytes:
             self.message(-1, 'Read short frame of ', len(data), ', expected ', to_read + got_num_bytes)
+            self.partial_frame = data
+            return None
 
         sfreq = (ord(data[8]) >> 2) & 0x0f
         sample_rate = self.dts_sample_rate_table[sfreq]
@@ -672,9 +659,107 @@ class SPDIFConverter:
 
 
     def message(self, msg_level, *message_items):
-        import sys
-        if msg_level >= self.options['quiet']:
-            sys.stderr.write(''.join(map(str, message_items)) + '\n')
+        self.message_writer.write(msg_level, *message_items)
+
+
+class MessageWriter:
+    def __init__(self, output_file, quiet_level):
+        self.output_file = output_file
+        self.quiet_level = quiet_level
+    def write(self, message_level, *message_items):
+        if message_level >= self.quiet_level:
+            self.output_file.write(''.join(map(str, message_items)) + '\n')
+
+
+class MultiFileReader:
+    _is_seekable = None
+
+    def __init__(self, file_list):
+        if not file_list:
+            raise RuntimeError('Cannot instantiate MultiFileReader without at least one file!')
+        self._file_list = file_list
+        self._file = file_list[0]
+        self._file_list_index = 0
+        self._offsets = [None] * len(file_list)
+        self._offsets[0] = 0
+
+    def _get_offset(self, file_index):
+        if self._offsets[file_index] is None:
+            prev_offset = self._get_offset(file_index - 1)
+            prev_file = self._file_list[file_index - 1]
+            old_pos = prev_file.tell()
+            prev_file.seek(0, 2)
+            prev_file_length = prev_file.tell()
+            prev_file.seek(old_pos, 0)
+            self._offsets[file_index] = prev_offset + prev_file_length
+        return self._offsets[file_index]
+
+    def is_seekable(self):
+        if self._is_seekable is None:
+            self._is_seekable = True
+            for f in self._file_list:
+                try:
+                    f.seek(0, 1) # does nothing!
+                except IOError:
+                    self._is_seekable = False
+                    break
+        return self._is_seekable
+
+    def tell(self):
+        i = 0
+        pos = 0
+        while i <= self._file_list_index:
+            pos = pos + self._get_offset(i)
+            i = i + 1
+        return pos + self._file.tell()
+
+    def seek(self, pos, whence=0):
+        if not self._is_seekable:
+            raise IOError
+        if whence == 1:
+            target = pos + self.tell()
+        elif whence == 2:
+            self._file_list_index = len(self._file_list) - 1
+            self._file = self._file_list[self._file_list_index]
+            self._file.seek(0, 2)
+            target = pos + self.tell()
+        else:
+            target = pos
+
+        i = 0
+        offsets = [None] * len(self._file_list)
+        offsets[0] = 0
+        while i < len(self._file_list):
+            if i + 1 < len(self._file_list):
+                offsets[i+1] = self._get_offset(i+1)
+                if target > offsets[i+1]:
+                    i = i + 1
+                    continue
+            self._file_list_index = i
+            self._file = self._file_list[self._file_list_index]
+            self._file.seek(target-offsets[i], 0)
+            break
+
+    def read(self, num=None):
+        data = []
+        while 1:
+            if num is not None and num <= 0:
+                break
+            if num is None:
+                chunk = self._file.read()
+            else:
+                chunk = self._file.read(num)
+            if not chunk:
+                if self._file_list_index == len(self._file_list) - 1:
+                    break
+                self._file_list_index = self._file_list_index + 1
+                self._file = self._file_list[self._file_list_index]
+                self._file.seek(0)
+                continue
+            data.append(chunk)
+            if num is not None:
+                num -= len(chunk)
+        return ''.join(data)
 
 
 def print_help(program_name):
@@ -682,10 +767,10 @@ def print_help(program_name):
     option_format = '%%%ds' % (assume_max_option_width,)
 
     print
-    print "  Copyright 2005 Steve Tregidgo -- smst@bigfoot.com"
+    print "  Copyright 2005-2007 Steve Tregidgo -- smst@bigfoot.com"
     print "  Version:", VERSION
     print
-    print "  Usage: %s [options] [input_file [output_file]]" % (program_name,)
+    print "  Usage: %s [options] [INPUT_FILE_1 [INPUT_FILE_2 [...]]]" % (program_name,)
     print
     print "  Given an AC3 or DTS file from a DVD-Video, this utility will write a WAV file"
     print "  encapsulating that digital data in an IEC61937 stream.  If that WAV is sent"
@@ -701,16 +786,21 @@ def print_help(program_name):
     print "  such a WAV or FLAC on the SB2, with digital output, will result in the"
     print "  original multichannel audio being passed through to the receiver."
     print
-    print "  If no output file is specified, an output name will be derived from the input"
-    print "  file name.  If no input file is specified, you must specify the '--stdin'"
-    print "  option to read from stdin.  If you want to read from stdin but write to an"
-    print "  output file, just use a dummy input file name along with '--stdin'."
+    print "  Each INPUT_FILE may be a single file name or may contain wildcards (in which"
+    print "  case the expanded list of files will be sorted alphabetically before being"
+    print "  processed).  There may be multiple INPUT_FILEs.  If no output files are"
+    print "  specified, output names will be derived from the input file names.  If just"
+    print "  one output file is to be produced, you may specify '--stdout' to write that"
+    print "  data to stdout.  You may specify '--stdin' to read from stdin instead of from"
+    print "  named files."
     print
     print "  Options:"
     for option_string, text in [
-        ('--stdin', 'Read input from stdin.'),
-        ('--stdout', 'Write output to stdout.'),
+        ('--stdin', 'Read input from stdin.  May not be used with INPUT_FILE.'),
+        ('--stdout', 'Write output to stdout.  May not be used with \'--output\'.'),
         ('', 'NOTE: using both stdin and stdout with WAV output will give\na WAV file with invalid data length.'),
+        ('--output=FILENAME', 'Specify an output filename.  If there are multiple input\nfiles, you must use this option once for each corresponding\noutput file (or omit the option altogether to derive names\nautomatically).'),
+        ('-j, --join', 'Concatenate all input files before processing.  A single\noutput file will be produced; \'--output\' must be specified\nas the name cannot be guessed.'),
         ('', ''),
         ('-a, --ac3', 'The input stream is expected to be AC-3.',),
         ('-d, --dts', 'The input stream is expected to be 16-bit big-endian DTS\n(such as is obtained from ripping a DVD).',),
@@ -723,6 +813,7 @@ def print_help(program_name):
         ('-q, --quiet', 'Print fewer messages to stderr.  Repeat this option to\nsilence all messages.'),
         ('-v, --verbose', 'Print more messages to stderr.'),
         ('--frame-size=SIZE', 'Advanced users\' setting: override the frame size in the\noutput file.  We normally pad to a frame size of 6144\n(=1536*4) or 2048 (=512*4); if the resultant WAV file\ndoesn\'t appear to be the correct length (as indicated by any\nnormal audio software which can read WAV files -- but don\'t\nplay the file!) then adjusting this value might help.  Use\n\'--verbose\' to discover the frame size used, and then try\nrunning again with the \'--frame-size\' option set to a\ndifferent value (multiplied up or down by an integer).  If\nyou discover something which works for your file, please let\nme know so I can try setting that size automatically\ndepending on the input file.'),
+        ('--no-massage', 'When multiple input files are processed at once, a partial\nframe at the end of one file will be prepended to the next\nfile.  This is useful if the original AC3/DTS file was not\nsplit on a frame boundary.  To simply discard partial frames\nin each file, use this option.'),
         ('', ''),
         ('-h, -?, --help', 'Display this help text.'),
 
@@ -740,13 +831,17 @@ def print_help(program_name):
 if __name__ == '__main__':
 
     import getopt
+    import glob
     import os
+    import StringIO
     import struct
     import sys
 
     program_name = os.path.split(sys.argv[0])[-1]
 
     short_options = ''.join([
+        'o:', # == 'output'
+        'j', # == 'join'
         'a', # == 'ac3'
         'd', # == 'dts'
         'w', # == 'wave'
@@ -761,6 +856,9 @@ if __name__ == '__main__':
         'dts',
         'stdin',
         'stdout',
+        'output=',
+        'join',
+        'no-massage',
         'wave',
         'raw',
         'quiet',
@@ -782,6 +880,9 @@ if __name__ == '__main__':
         'wave': True,
         'stdin': False,
         'stdout': False,
+        'output': [],
+        'join': False,
+        'no-massage': False,
         'quiet': 0, # 0, 1, 2
         'ac3': False,
         'dts': False,
@@ -821,8 +922,17 @@ if __name__ == '__main__':
                 sys.stderr.write("'truncate-input' option not an int: " + value)
                 sys.exit(1)
 
+        elif option in ['-o', '--output']:
+            options['output'].append(value)
+
         elif option in ['--persevere']:
             options['persevere'] = True
+
+        elif option in ['-j', '--join']:
+            options['join'] = True
+
+        elif option in ['--no-massage']:
+            options['no-massage'] = True
 
         elif option in ['--help', '-h', '-?']:
             options['help'] = True
@@ -831,16 +941,123 @@ if __name__ == '__main__':
         print_help(program_name)
         sys.exit(0)
 
-    spdif = SPDIFConverter(options, cli_arguments)
-    if not spdif.initialised:
-        spdif.message(0, "There was an error initialising.  Aborting.")
+    message = MessageWriter(sys.stderr, options['quiet']).write
+
+    input_fname_list = []
+    _seen = {}
+    for argument in cli_arguments:
+        fname_list = glob.glob(argument)
+        if not fname_list:
+            message(0, "Warning: no files matched by input argument: ", argument)
+        fname_list.sort()
+        for fname in fname_list:
+            if _seen.has_key(fname):
+                message(0, "Warning: processing this file more than once: ", fname)
+            _seen[fname] = _seen.get(fname, 0) + 1
+            input_fname_list.append(fname)
+
+    if input_fname_list and options['stdin']:
+        message(1, "Cannot mix stdin and named file inputs.")
+        message(1, "Aborting.")
         sys.exit(1)
 
-    try:
-        spdif.go()
-    except RuntimeError, error:
-        spdif.message(0, "Received RuntimeError during conversion:")
-        spdif.message(0, error)
+    if options['output'] and options['stdout']:
+        message(1, "Cannot mix stdout and named file outputs.")
+        message(1, "Aborting.")
+        sys.exit(1)
 
-    except KeyboardInterrupt:
-        print "Interrupted!  Read this many bytes:", spdif.fin.tell()
+    if options['stdin']:
+        input_fname_list.append(None)
+    elif not input_fname_list:
+        message(1, "Not using stdin, and no input file name specified!")
+        message(1, "Aborting.")
+        sys.exit(1)
+
+    if options['stdout']:
+        options['output'].append(None)
+
+    if options['join']:
+        num_input_files = 1
+    else:
+        num_input_files = len(input_fname_list)
+
+    if len(options['output']) > num_input_files:
+        message(1, "More output files specified than input files.")
+        message(1, "Aborting.")
+        sys.exit(1)
+
+    if options['output'] and len(options['output']) < num_input_files:
+        message(1, "At least one output file specified, but fewer than input files.")
+        message(1, "Aborting.")
+        sys.exit(1)
+
+    if input_fname_list and not options['output']:
+        if options['join']:
+            message(1, "Cannot derive automatic output filename when joining input files.")
+            message(1, "Aborting.")
+            sys.exit(1)
+        for input_fname in input_fname_list:
+            if input_fname is None:
+                message(1, "Cannot derive automatic output filename when using stdin.")
+                message(1, "Aborting.")
+                sys.exit(1)
+            if options['wave']:
+                output_fname = input_fname + '.wav'
+            else:
+                output_fname = input_fname + '.spdif'
+            options['output'].append(output_fname)
+
+    input_file_list = []
+    for input_fname in input_fname_list:
+        if input_fname is None:
+            input_file = sys.stdin
+        else:
+            input_file = open(input_fname, 'rb')
+        input_file_list.append(input_file)
+    if options['join']:
+        input_file_list = [MultiFileReader(input_file_list)]
+        input_fname_list = ['[%s]' % ('; '.join([
+            input_fname is None and '<stdin>' or input_fname
+            for input_fname in input_fname_list
+        ]),)]
+
+    remainder_file = None
+    for input_fname, input_file, output_fname in zip(input_fname_list, input_file_list, options['output']):
+        if input_fname is None:
+            message(0, "Reading input from stdin")
+        else:
+            message(0, "Reading input from file ", input_fname)
+        if remainder_file is not None:
+            input_file = MultiFileReader( [remainder_file, input_file] )
+            remainder_file = None
+            message(0, "Including data remaining from previous input file.")
+
+        if output_fname is None:
+            output_file = sys.stdout
+            message(0, "Writing output to stdout")
+        else:
+            output_file = open(output_fname, 'w+b')
+            message(0, "Writing output to file ", output_fname)
+
+        spdif = SPDIFConverter(options.copy(), input_file=input_file, output_file=output_file)
+        if not spdif.initialised:
+            spdif.message(0, "There was an error initialising.  Skipping file: ", input_fname)
+            continue
+
+        try:
+            spdif.go()
+        except RuntimeError, error:
+            spdif.message(0, "Received RuntimeError during conversion of file: ", input_fname)
+            spdif.message(0, error)
+
+        except KeyboardInterrupt:
+            print "Interrupted!  Read this many bytes:", spdif.fin.tell()
+            print "Aborting."
+            break
+
+        else:
+            if spdif.partial_frame and not options['no-massage']:
+                remainder_file = StringIO.StringIO(spdif.partial_frame)
+                remainder_file.seek(0, 0)
+                message(-1, "Remainder of ", len(spdif.partial_frame), " bytes.  Prepending to next input file.")
+            message(0, '') # blank line
