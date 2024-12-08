@@ -1,5 +1,5 @@
 #!python
-# Copyright 2005-2007 Steve Tregidgo -- smst@bigfoot.com
+# Copyright 2005-2024 Steve Tregidgo
 #
 # Utility to prepare DTS/AC3 files for SPDIF output.
 #
@@ -767,7 +767,7 @@ def print_help(program_name):
     option_format = '%%%ds' % (assume_max_option_width,)
 
     print
-    print "  Copyright 2005-2007 Steve Tregidgo -- smst@bigfoot.com"
+    print "  Copyright 2005-2024 Steve Tregidgo"
     print "  Version:", VERSION
     print
     print "  Usage: %s [options] [INPUT_FILE_1 [INPUT_FILE_2 [...]]]" % (program_name,)
@@ -824,9 +824,6 @@ def print_help(program_name):
                 print (' ' * assume_max_option_width),
             print line
 
-    print
-    print "  If you have any comments or improvements, please email smst@bigfoot.com"
-    print
 
 if __name__ == '__main__':
 
